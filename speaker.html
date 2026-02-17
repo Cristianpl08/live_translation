@@ -227,7 +227,7 @@
             if (!apiKey) { alert('Please enter your OpenAI API key.'); return false; }
             sessionStorage.setItem('openai_api_key', apiKey);
 
-            const wsUrl = `ws://${location.host}?role=speaker`;
+            const wsUrl = `wss://${location.host}?role=speaker`;
             serverWs = new WebSocket(wsUrl);
 
             serverWs.onopen = () => {

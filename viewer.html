@@ -110,7 +110,7 @@
         }
 
         function connect() {
-            const wsUrl = `ws://${location.host}?role=viewer`;
+            const wsUrl = `wss://${location.host}?role=viewer`;
             const ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {
