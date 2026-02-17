@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speaker — Live Translation</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f0f0f;
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 0.3rem; color: #fff; }
+        .subtitle { color: #888; font-size: 0.9rem; margin-bottom: 1.5rem; }
+        .config {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            width: 100%;
+            max-width: 600px;
+        }
+        .config input {
+            flex: 1;
+            padding: 0.6rem 1rem;
+            border: 1px solid #333;
+            border-radius: 8px;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            font-size: 0.95rem;
+        }
+        .controls { display: flex; gap: 0.75rem; margin-bottom: 1.5rem; }
+        button {
+            padding: 0.6rem 1.8rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        #startBtn { background: #22c55e; color: #000; }
+        #startBtn:hover { background: #16a34a; }
+        #startBtn:disabled { background: #555; color: #999; cursor: default; }
+        #stopBtn { background: #ef4444; color: #fff; }
+        #stopBtn:hover { background: #dc2626; }
+        #stopBtn:disabled { background: #555; color: #999; cursor: default; }
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            font-size: 0.9rem;
+        }
+        .status-dot {
+            width: 10px; height: 10px; border-radius: 50%; background: #555;
+        }
+        .status-dot.connected { background: #22c55e; }
+        .status-dot.error { background: #ef4444; }
+        .info { color: #888; font-size: 0.85rem; margin-bottom: 1.5rem; }
+        .transcript-container {
+            width: 100%; max-width: 700px; display: flex; flex-direction: column; gap: 1rem;
+        }
+        .transcript-box {
+            background: #1a1a1a; border: 1px solid #333; border-radius: 10px;
+            padding: 1rem 1.2rem; min-height: 120px; max-height: 250px; overflow-y: auto;
+        }
+        .transcript-box h3 {
+            font-size: 0.85rem; color: #888; margin-bottom: 0.6rem;
+            text-transform: uppercase; letter-spacing: 0.05em;
+        }
+        .transcript-box .text { font-size: 1.05rem; line-height: 1.6; white-space: pre-wrap; }
+        #spanishBox .text { color: #facc15; }
+        #englishBox .text { color: #60a5fa; }
+        .current-line { color: #aaa; font-style: italic; }
+    </style>
+</head>
+<body>
+    <h1>🎙 Speaker — Live Translation</h1>
+    <p class="subtitle">You speak in Spanish, viewers see the English translation</p>
+
+    <div class="config">
+        <input type="password" id="apiKey" placeholder="OpenAI API Key (sk-...)" />
+    </div>
+
+    <div class="controls">
+        <button id="startBtn">▶ Start</button>
+        <button id="stopBtn" disabled>■ Stop</button>
+    </div>
+
+    <div class="status">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Disconnected</span>
+    </div>
+    <p class="info" id="viewerInfo"></p>
+
+    <div class="transcript-container">
+        <div class="transcript-box" id="spanishBox">
+            <h3>🇪🇸 Spanish (Original)</h3>
+            <div class="text" id="spanishContent"></div>
+        </div>
+        <div class="transcript-box" id="englishBox">
+            <h3>🇺🇸 English (Translation)</h3>
+            <div class="text" id="englishContent"></div>
+        </div>
+    </div>
+
+    <script>
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const apiKeyInput = document.getElementById('apiKey');
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const spanishContent = document.getElementById('spanishContent');
+        const englishContent = document.getElementById('englishContent');
+        const viewerInfo = document.getElementById('viewerInfo');
+
+        const savedKey = sessionStorage.getItem('openai_api_key');
+        if (savedKey) apiKeyInput.value = savedKey;
+
+        let serverWs = null;
+        let mediaStream = null;
+        let audioContext = null;
+        let workletNode = null;
+        let commitInterval = null;
+        let hasAudioData = false;
+        let audioSamplesSent = 0;
+        let lastAudioTime = 0; // timestamp of last audio chunk above threshold
+        let currentEnglishLine = '';
+
+        function setStatus(text, state) {
+            statusText.textContent = text;
+            statusDot.className = 'status-dot' + (state ? ' ' + state : '');
+        }
+
+        function appendSpanish(text) {
+            const p = document.createElement('p');
+            p.textContent = text;
+            spanishContent.appendChild(p);
+            spanishContent.scrollTop = spanishContent.scrollHeight;
+        }
+
+        function updateCurrentEnglish(delta) {
+            currentEnglishLine += delta;
+            let el = englishContent.querySelector('.current-line');
+            if (!el) {
+                el = document.createElement('p');
+                el.className = 'current-line';
+                englishContent.appendChild(el);
+            }
+            el.textContent = currentEnglishLine;
+            englishContent.scrollTop = englishContent.scrollHeight;
+        }
+
+        function finalizeEnglishLine() {
+            const el = englishContent.querySelector('.current-line');
+            if (el) el.className = '';
+            currentEnglishLine = '';
+        }
+
+        // --- Audio Capture ---
+        async function startAudioCapture() {
+            mediaStream = await navigator.mediaDevices.getUserMedia({
+                audio: { sampleRate: 24000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+            });
+            audioContext = new AudioContext({ sampleRate: 24000 });
+            const source = audioContext.createMediaStreamSource(mediaStream);
+
+            const workletCode = `
+                class PcmProcessor extends AudioWorkletProcessor {
+                    process(inputs) {
+                        const input = inputs[0];
+                        if (input && input[0]) this.port.postMessage(input[0]);
+                        return true;
+                    }
+                }
+                registerProcessor('pcm-processor', PcmProcessor);
+            `;
+            const blob = new Blob([workletCode], { type: 'application/javascript' });
+            const url = URL.createObjectURL(blob);
+            await audioContext.audioWorklet.addModule(url);
+            URL.revokeObjectURL(url);
+
+            workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
+            workletNode.port.onmessage = (e) => {
+                if (!serverWs || serverWs.readyState !== WebSocket.OPEN) return;
+                const float32 = e.data;
+
+                // Skip silence (high threshold to avoid hallucinations)
+                let sum = 0;
+                for (let i = 0; i < float32.length; i++) sum += float32[i] * float32[i];
+                if (Math.sqrt(sum / float32.length) < 0.03) return;
+
+                // float32 -> PCM16 -> base64
+                const int16 = new Int16Array(float32.length);
+                for (let i = 0; i < float32.length; i++) {
+                    const s = Math.max(-1, Math.min(1, float32[i]));
+                    int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                }
+                const bytes = new Uint8Array(int16.buffer);
+                let binary = '';
+                for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+
+                serverWs.send(JSON.stringify({ type: 'audio', audio: btoa(binary) }));
+                hasAudioData = true;
+                audioSamplesSent += float32.length;
+                lastAudioTime = Date.now();
+            };
+
+            source.connect(workletNode);
+            workletNode.connect(audioContext.destination);
+        }
+
+        function stopAudioCapture() {
+            if (workletNode) { workletNode.disconnect(); workletNode = null; }
+            if (audioContext) { audioContext.close(); audioContext = null; }
+            if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+        }
+
+        // --- Server WebSocket ---
+        function connectToServer() {
+            const apiKey = apiKeyInput.value.trim();
+            if (!apiKey) { alert('Please enter your OpenAI API key.'); return false; }
+            sessionStorage.setItem('openai_api_key', apiKey);
+
+            const wsUrl = `ws://${location.host}?role=speaker`;
+            serverWs = new WebSocket(wsUrl);
+
+            serverWs.onopen = () => {
+                setStatus('Connected to server', 'connected');
+                serverWs.send(JSON.stringify({ type: 'start', apiKey }));
+            };
+
+            serverWs.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                console.log('[Server Event]', msg.type, msg);
+                switch (msg.type) {
+                    case 'status':
+                        setStatus(msg.message, 'connected');
+                        break;
+                    case 'spanish':
+                        appendSpanish(msg.text);
+                        break;
+                    case 'english_delta':
+                        updateCurrentEnglish(msg.delta);
+                        break;
+                    case 'english_done':
+                        finalizeEnglishLine();
+                        break;
+                    case 'error':
+                        setStatus('Error: ' + msg.message, 'error');
+                        break;
+                }
+            };
+
+            serverWs.onerror = () => setStatus('Server connection error', 'error');
+            serverWs.onclose = () => { setStatus('Disconnected from server', ''); stopSession(); };
+
+            return true;
+        }
+
+        // --- Session ---
+        async function startSession() {
+            if (!connectToServer()) return;
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            apiKeyInput.disabled = true;
+
+            try {
+                await startAudioCapture();
+
+                // Check every 500ms: if we have audio AND 2s of silence passed, commit
+                commitInterval = setInterval(() => {
+                    if (!serverWs || serverWs.readyState !== WebSocket.OPEN) return;
+                    if (!hasAudioData || audioSamplesSent < 12000) return;
+                    const silenceMs = Date.now() - lastAudioTime;
+                    if (silenceMs < 2000) return; // wait for 2s of silence
+                    hasAudioData = false;
+                    audioSamplesSent = 0;
+                    serverWs.send(JSON.stringify({ type: 'commit' }));
+                }, 500);
+
+            } catch (err) {
+                console.error('Mic error:', err);
+                setStatus('Microphone access denied', 'error');
+                stopSession();
+            }
+        }
+
+        function stopSession() {
+            if (commitInterval) { clearInterval(commitInterval); commitInterval = null; }
+            hasAudioData = false;
+            stopAudioCapture();
+            if (serverWs) {
+                serverWs.send(JSON.stringify({ type: 'stop' }));
+                serverWs.close();
+                serverWs = null;
+            }
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            apiKeyInput.disabled = false;
+            audioSamplesSent = 0;
+
+            // Show message, then clear after 3 seconds
+            spanishContent.innerHTML = '<p style="color:#888; font-style:italic;">Session ended. Content will be cleared...</p>';
+            englishContent.innerHTML = '<p style="color:#888; font-style:italic;">Session ended. Content will be cleared...</p>';
+            currentEnglishLine = '';
+            setTimeout(() => {
+                spanishContent.innerHTML = '';
+                englishContent.innerHTML = '';
+            }, 3000);
+        }
+
+        startBtn.addEventListener('click', startSession);
+        stopBtn.addEventListener('click', stopSession);
+
+        viewerInfo.textContent = `Viewers connect to: ${location.origin}/viewer`;
+    </script>
+</body>
+</html>

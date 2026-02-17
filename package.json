@@ -1,0 +1,12 @@
+{
+  "name": "live-translation",
+  "version": "1.0.0",
+  "description": "Live Spanish to English translation with speaker/viewer mode",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}

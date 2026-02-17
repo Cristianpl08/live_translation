@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Viewer — Live Translation</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f0f0f;
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 0.3rem; color: #fff; }
+        .subtitle { color: #888; font-size: 0.9rem; margin-bottom: 1.5rem; }
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            font-size: 0.9rem;
+        }
+        .status-dot {
+            width: 10px; height: 10px; border-radius: 50%; background: #555;
+        }
+        .status-dot.connected { background: #22c55e; animation: pulse 2s infinite; }
+        .status-dot.error { background: #ef4444; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        .transcript-container {
+            width: 100%; max-width: 700px; flex: 1;
+            display: flex; flex-direction: column; gap: 1rem;
+        }
+        .transcript-box {
+            background: #1a1a1a; border: 1px solid #333; border-radius: 10px;
+            padding: 1rem 1.2rem; min-height: 180px; max-height: 350px; overflow-y: auto;
+        }
+        .transcript-box h3 {
+            font-size: 0.85rem; color: #888; margin-bottom: 0.6rem;
+            text-transform: uppercase; letter-spacing: 0.05em;
+        }
+        .transcript-box .text { font-size: 1.1rem; line-height: 1.7; white-space: pre-wrap; }
+        #spanishBox .text { color: #facc15; }
+        #englishBox .text { color: #60a5fa; }
+        .current-line { color: #aaa; font-style: italic; }
+    </style>
+</head>
+<body>
+    <h1>📺 Live Translation</h1>
+    <p class="subtitle">Spanish → English — read-only view</p>
+
+    <div class="status">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Connecting...</span>
+    </div>
+
+    <div class="transcript-container">
+        <div class="transcript-box" id="spanishBox">
+            <h3>🇪🇸 Spanish (Original)</h3>
+            <div class="text" id="spanishContent"></div>
+        </div>
+        <div class="transcript-box" id="englishBox">
+            <h3>🇺🇸 English (Translation)</h3>
+            <div class="text" id="englishContent"></div>
+        </div>
+    </div>
+
+    <script>
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const spanishContent = document.getElementById('spanishContent');
+        const englishContent = document.getElementById('englishContent');
+        let currentEnglishLine = '';
+
+        function setStatus(text, state) {
+            statusText.textContent = text;
+            statusDot.className = 'status-dot' + (state ? ' ' + state : '');
+        }
+
+        function appendSpanish(text) {
+            const p = document.createElement('p');
+            p.textContent = text;
+            spanishContent.appendChild(p);
+            spanishContent.scrollTop = spanishContent.scrollHeight;
+        }
+
+        function updateCurrentEnglish(delta) {
+            currentEnglishLine += delta;
+            let el = englishContent.querySelector('.current-line');
+            if (!el) {
+                el = document.createElement('p');
+                el.className = 'current-line';
+                englishContent.appendChild(el);
+            }
+            el.textContent = currentEnglishLine;
+            englishContent.scrollTop = englishContent.scrollHeight;
+        }
+
+        function finalizeEnglishLine() {
+            const el = englishContent.querySelector('.current-line');
+            if (el) el.className = '';
+            currentEnglishLine = '';
+        }
+
+        function connect() {
+            const wsUrl = `ws://${location.host}?role=viewer`;
+            const ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                setStatus('Connected — waiting for speaker...', 'connected');
+            };
+
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                switch (msg.type) {
+                    case 'status':
+                        setStatus(msg.message, 'connected');
+                        break;
+                    case 'spanish':
+                        appendSpanish(msg.text);
+                        break;
+                    case 'english_delta':
+                        updateCurrentEnglish(msg.delta);
+                        break;
+                    case 'english_done':
+                        finalizeEnglishLine();
+                        break;
+                    case 'error':
+                        setStatus('Error: ' + msg.message, 'error');
+                        break;
+                }
+            };
+
+            ws.onerror = () => {
+                setStatus('Connection error', 'error');
+            };
+
+            ws.onclose = () => {
+                setStatus('Disconnected — reconnecting...', '');
+                setTimeout(connect, 3000);
+            };
+        }
+
+        connect();
+    </script>
+</body>
+</html>
